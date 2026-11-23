@@ -1168,14 +1168,14 @@ class DistMoeConfigTest(unittest.TestCase):
             MXFP8_E4M3,
             NVFP4,
             build_blockscaled_config,
-            sm107_inference_config,
+            sm107_blockscaled_config,
         )
 
         for fmt in (NVFP4, MXFP8_E4M3):
             config = build_blockscaled_config(num_ctas=2, block_n=256, format=fmt)
             for capability in ((10, 0), (10, 3)):
-                self.assertIs(sm107_inference_config(config, fmt, capability), config)
-            wide = sm107_inference_config(config, fmt, (10, 7))
+                self.assertIs(sm107_blockscaled_config(config, fmt, capability), config)
+            wide = sm107_blockscaled_config(config, fmt, (10, 7))
             self.assertTrue(wide["USE_SM107"])
             self.assertFalse(wide["OVERLAPPING_ACCUM"])
             self.assertEqual(wide["MMA_ATOM_N"], config["BLOCK_SIZE_N"])
@@ -1185,9 +1185,30 @@ class DistMoeConfigTest(unittest.TestCase):
                 dict(config, COMPACT_DECODE_ROWS=True),
             ):
                 self.assertIs(
-                    sm107_inference_config(unsupported, fmt, (10, 7)), unsupported
+                    sm107_blockscaled_config(unsupported, fmt, (10, 7)), unsupported
                 )
-            self.assertIs(sm107_inference_config(config, MXFP4, (10, 7)), config)
+            self.assertIs(sm107_blockscaled_config(config, MXFP4, (10, 7)), config)
+
+    def test_sm107_mega_backward_density_selection(self) -> None:
+        """Use wide Mega below the measured row-capacity cutoff and retain the dense preset."""
+        from dist_moe.kernels.blockscaled_config import (
+            MXFP8_E4M3,
+            build_blockscaled_config,
+        )
+        from dist_moe.kernels.mega_blockscaled_grouped_gemm import (
+            _sm107_mega_backward_config,
+        )
+
+        config = build_blockscaled_config(num_ctas=2, block_n=256, format=MXFP8_E4M3)
+        device = torch.device("cuda")
+        with mock.patch.object(
+            torch.cuda, "get_device_capability", return_value=(10, 7)
+        ):
+            wide = _sm107_mega_backward_config(config, MXFP8_E4M3, device, 2047, 2)
+            dense = _sm107_mega_backward_config(config, MXFP8_E4M3, device, 2048, 2)
+        self.assertTrue(wide["USE_SM107"])
+        self.assertEqual(wide["NUM_SMEM_BUFFERS"], 5)
+        self.assertIs(dense, config)
 
     def test_nvfp4_requires_inference_and_aligned_dimensions(self) -> None:
         """Reject NVFP4 training and shapes outside the kernel contract."""
@@ -2626,6 +2647,61 @@ class DistMoeKernelTest(unittest.TestCase):
                     0,
                 )
                 self._assert_planner_reset(context.activation_buffer)
+
+    def test_sm107_mxfp8_backward_transposed_operands(self) -> None:
+        """Match transposed MXFP8 backward dots and accumulated FP32 WGRAD exactly."""
+        if torch.cuda.get_device_capability() != (10, 7):
+            self.skipTest("requires SM 10.7")
+        from dist_moe.kernels.blockscaled_grouped_gemm import (
+            blockscaled_grouped_gemm_dgrad,
+            blockscaled_grouped_gemm_wgrad,
+        )
+
+        torch.manual_seed(17)
+        counts = (128, 0, 384)
+        splits = torch.tensor(counts, device="cuda", dtype=torch.int32)
+        rows, groups, n, k = sum(counts), len(counts), 512, 256
+
+        def operand(*shape):
+            """Generate small exact FP8 values for FP32 dot-product references."""
+            return torch.randint(-2, 3, shape, device="cuda").to(torch.float8_e4m3fn)
+
+        def ones(size):
+            """Allocate unit E8M0 scales in blocked storage."""
+            return torch.full((size,), 127, device="cuda", dtype=torch.uint8).view(
+                torch.float8_e8m0fnu
+            )
+
+        dy, x, w = operand(rows, n), operand(rows, k), operand(groups, n, k)
+        dx = blockscaled_grouped_gemm_dgrad(
+            dy,
+            w,
+            ones(rows * n // 32),
+            ones(groups * k * n // 32),
+            splits,
+        )
+        dw = torch.ones((groups, n, k), device="cuda")
+        blockscaled_grouped_gemm_wgrad(
+            dy.T,
+            x.T,
+            ones(n * rows // 32),
+            ones(k * rows // 32),
+            splits,
+            dw=dw,
+            output_accum=True,
+            out_dtype=torch.float32,
+        )
+        expected_dx = []
+        for group, (local_dy, local_x) in enumerate(
+            zip(dy.float().split(counts), x.float().split(counts), strict=True)
+        ):
+            expected_dx.append(local_dy @ w[group].float())
+            torch.testing.assert_close(
+                dw[group], 1 + local_dy.T @ local_x, atol=0, rtol=0
+            )
+        torch.testing.assert_close(
+            dx, torch.cat(expected_dx).to(dx.dtype), atol=0, rtol=0
+        )
 
     def test_sm107_wide_k_interleaved_tail(self) -> None:
         """Bound routed error for partial native MMA tiles using both wide-K descriptors."""

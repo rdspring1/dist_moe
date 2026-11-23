@@ -828,10 +828,10 @@ def _pick_literal_config(
     )
 
 
-def sm107_inference_config(
+def sm107_blockscaled_config(
     config: dict, format: BlockScaledFormatSpec, capability: tuple[int, int]
 ) -> dict:
-    """Select wide-K MMA for full-width, single-atom inference tiles."""
+    """Select wide-K MMA for full-width, single-atom block-scaled tiles."""
     if (
         capability != (10, 7)
         or format not in (NVFP4, MXFP8_E4M3)

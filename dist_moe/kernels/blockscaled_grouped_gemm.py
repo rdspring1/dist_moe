@@ -97,7 +97,7 @@ from .blockscaled_config import (  # noqa: F401
     MXFP8_E5M2,
     NVFP4,
     PRODUCTION_BLOCKSCALED_CONFIGS,
-    sm107_inference_config,
+    sm107_blockscaled_config,
 )
 from .blockscaled_grouped_gemm_kernel import (  # noqa: F401
     _LaunchTensorBundle,
@@ -846,14 +846,22 @@ def _blockscaled_grouped_gemm(  # noqa: C901
                 == sm103.SM103_COMPUTE_CAPABILITY
             ),
         )
-        if problem_type == _FPROP and a.stride(-1) == b.stride(-1) == 1:
-            config = sm107_inference_config(
+        backward_mxfp8 = (
+            problem_type in (_DGRAD, _WGRAD) and kernel_format is MXFP8_E4M3
+        )
+        if backward_mxfp8 or (
+            problem_type == _FPROP and a.stride(-1) == b.stride(-1) == 1
+        ):
+            config = sm107_blockscaled_config(
                 config, kernel_format, torch.cuda.get_device_capability(a.device)
             )
+            if config.get("USE_SM107") and problem_type == _WGRAD:
+                config.update(STATIC_SCHEDULER=True, EPILOGUE_SUBTILE=1, NUM_C_STAGES=2)
             if (
                 config.get("USE_SM107")
                 and config["NUM_CTAS"] == 2
                 and config["BLOCK_SIZE_N"] == 256
+                and problem_type == _FPROP
                 and out_dtype == torch.bfloat16
                 and problem.G <= 48
                 and config["NUM_SMEM_BUFFERS"] == 5

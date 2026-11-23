@@ -36,6 +36,7 @@ from .activation_buffer_kernel import (
     _empty_qdata,
     _prepare_activation_buffer_launch_args,
 )
+from .blockscaled_config import sm107_blockscaled_config
 from .blockscaled_grouped_gemm import (
     _compile_or_get,
     _config_cache_key,
@@ -188,6 +189,23 @@ def _validate_mega_padded_scale_capacity(
             f"{padded_scale_rows} rows, got scale_rows={scale_rows}"
         )
     _MEGA_PADDED_SCALE_CAPACITY_CHECKED.add(split_sizes, checked_key)
+
+
+def _sm107_mega_backward_config(
+    config: dict,
+    format: BlockScaledFormatSpec,
+    device: torch.device,
+    rows: int,
+    groups: int,
+) -> dict:
+    """Select the wide MXFP8 instruction and fused backward pipeline depths."""
+    if format is MXFP8_E4M3 and rows < 1024 * groups:
+        config = sm107_blockscaled_config(
+            config, format, torch.cuda.get_device_capability(device)
+        )
+        if config.get("USE_SM107"):
+            config.update(EPILOGUE_SUBTILE=2, NUM_C_STAGES=2, NUM_SMEM_BUFFERS=5)
+    return config
 
 
 def _reject_paged_swap_ab_bprop(config: dict) -> None:
@@ -1084,8 +1102,11 @@ def _cute_mega_blockscaled_grouped_gemm_dispatch_bprop(  # noqa: C901
         )
         config["STATIC_SCHEDULER"] = False
         if config.get("EPILOGUE_SUBTILE") == 2:
-            # Mega bprop needs subtile 4 to avoid epilogue register spills.
+            # The legacy backward epilogue splits the tile to limit register spills.
             config["EPILOGUE_SUBTILE"] = 4
+        config = _sm107_mega_backward_config(
+            config, format, w.device, rows, split_sizes.numel()
+        )
     else:
         config = dict(config)
         config.setdefault("STATIC_SCHEDULER", False)
@@ -1481,6 +1502,9 @@ def _cute_mega_blockscaled_grouped_gemm_combine_bprop(  # noqa: C901
         config["NUM_SMEM_BUFFERS"] = 6
         config["NUM_C_STAGES"] = 1
         config["EPILOGUE_SUBTILE"] = 4
+        config = _sm107_mega_backward_config(
+            config, format, w.device, rows, split_sizes.numel()
+        )
     else:
         config = dict(config)
         config.setdefault("STATIC_SCHEDULER", False)

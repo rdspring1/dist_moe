@@ -334,3 +334,18 @@ The synchronous block-scaled implementation is not part of the public runtime.
 ## SM 10.7 inference
 
 Eligible MXFP8 forward tiles use K=64 per instruction with two 32-element scale groups per operand. The scale copy broadcasts each shared scale row across four TMEM datapath groups, and the MMA consumes the scale fragment paired with its operand. See the [SM 10.7 grouped inference measurements](sm107_inference_benchmark.md) for tile eligibility, resource limits, and measured stage depths.
+
+## SM 10.7 backward
+
+Eligible MXFP8 E4M3 DGRAD and WGRAD tiles use two K=64 instructions per K=128 mainloop iteration. DGRAD reads transposed expert weights. WGRAD reduces over the routed rows for each expert. Both use independent TMEM accumulator slots and the existing blocked scales with one scale per 32 elements.
+
+The staged pipeline keeps the operand depth selected for its fused dispatch and combine DGRAD kernels. Its standalone WGRAD uses static scheduling over the fixed-size expert weight matrices, a full-width epilogue and two output stages. The Mega pipeline runs DGRAD and WGRAD in the same kernel and uses five operand stages, two output stages and two epilogue subtiles on the wide-K path. Mega retains its prior instruction and pipeline settings when the routed row capacity averages at least 1,024 per local expert. The wide-K variants regressed on several of those shapes. These settings apply to automatic selection for eligible tiles.
+
+The [backward benchmark](../benchmarks/mxfp8_backward.py) times CUDA graph replay of the complete backward through the public training API, including activation and routing-score gradients and both expert weight gradients. Each untimed forward populates the saved activations for its backward. Fixed balanced routes assign 12,288 rows per rank from 2,048 input tokens with top-6 routing and hidden size 7168. A single GPU models 384 divided by EP local experts, so the timings exclude inter-GPU traffic. Each reported latency is the median of five ten-replay windows after warmup.
+
+```sh
+python -m benchmarks.mxfp8_backward --pipeline staged --ep 8 16 32 64 --width 1536 3072 6144
+python -m benchmarks.mxfp8_backward --pipeline mega --ep 8 16 32 64 --width 1536 3072 6144
+```
+
+The [per-shape timings](../benchmarks/results/sm107/mxfp8-backward.csv) compare the SM 10.7 backward kernels against revision `56571c7` on the same GPU for each pipeline. The measurements used a 212-SM device, PyTorch 2.15.0a0, CUDA 13.5 and CUTLASS DSL 4.8.0. The minimum and maximum columns are the range across the five timed windows.

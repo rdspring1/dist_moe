@@ -48,7 +48,7 @@ from .activation_buffer_kernel import (
     _empty_qdata,
     _prepare_activation_buffer_launch_args,
 )
-from .blockscaled_config import sm107_inference_config, sm107_prefill_stages
+from .blockscaled_config import sm107_blockscaled_config, sm107_prefill_stages
 from .blockscaled_grouped_gemm import (
     _allocate_workspace,
     _compile_or_get,
@@ -740,11 +740,15 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
             combine_swiglu_k=combine_swiglu_k,
             c_stage_dtype=c_stage_dtype,
         )
-    if derive_pipeline_depth and problem_type == _FPROP:
-        cfg = sm107_inference_config(
+    forward_prefill = derive_pipeline_depth and problem_type == _FPROP
+    backward_mxfp8 = (
+        auto_selected_config and problem_type == _DGRAD and kernel_format is MXFP8_E4M3
+    )
+    if backward_mxfp8 or forward_prefill:
+        cfg = sm107_blockscaled_config(
             cfg, kernel_format, torch.cuda.get_device_capability(b.device)
         )
-        if cfg.get("USE_SM107") and problem.GM >= 256 * problem.G:
+        if forward_prefill and cfg.get("USE_SM107") and problem.GM >= 256 * problem.G:
             cfg = sm107_prefill_stages(
                 cfg,
                 _estimate_staged_dist_smem_bytes,
@@ -1488,11 +1492,15 @@ def _fused_dist_blockscaled_grouped_gemm_dispatch_quant_impl(  # noqa: C901
             combine_swiglu_k=None,
             c_stage_dtype=out_dtype,
         )
-    if derive_pipeline_depth and problem_type == _FPROP:
-        cfg = sm107_inference_config(
+    forward_prefill = derive_pipeline_depth and problem_type == _FPROP
+    backward_mxfp8 = (
+        auto_selected_config and problem_type == _DGRAD and kernel_format is MXFP8_E4M3
+    )
+    if backward_mxfp8 or forward_prefill:
+        cfg = sm107_blockscaled_config(
             cfg, kernel_format, torch.cuda.get_device_capability(b.device)
         )
-        if cfg.get("USE_SM107") and problem.GM >= 256 * problem.G:
+        if forward_prefill and cfg.get("USE_SM107") and problem.GM >= 256 * problem.G:
             cfg = sm107_prefill_stages(
                 cfg,
                 _estimate_staged_dist_smem_bytes,

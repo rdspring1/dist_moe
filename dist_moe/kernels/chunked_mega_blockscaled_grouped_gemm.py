@@ -37,7 +37,7 @@ from .activation_buffer_kernel import (
 )
 from .blockscaled_config import (
     _host_tensormaps_available,
-    sm107_inference_config,
+    sm107_blockscaled_config,
     sm107_prefill_stages,
     sm107_smem_budget,
 )
@@ -2556,7 +2556,7 @@ def chunked_mega_blockscaled_grouped_gemm_fprop_swiglu_fwd(  # noqa: C901
         )
         combine_tile_padded = config is not unpadded_config
     if auto_inference_tuning:
-        config = sm107_inference_config(
+        config = sm107_blockscaled_config(
             config, kernel_format, torch.cuda.get_device_capability(w13.device)
         )
         if config.get("USE_SM107") and rows >= 256 * groups:
