@@ -349,3 +349,14 @@ python -m benchmarks.mxfp8_backward --pipeline mega --ep 8 16 32 64 --width 1536
 ```
 
 The [per-shape timings](../benchmarks/results/sm107/mxfp8-backward.csv) compare the SM 10.7 backward kernels against revision `56571c7` on the same GPU for each pipeline. The measurements used a 212-SM device, PyTorch 2.15.0a0, CUDA 13.5 and CUTLASS DSL 4.8.0. The minimum and maximum columns are the range across the five timed windows.
+
+### Forward and backward together
+
+Training forward uses K=64 for eligible automatically selected SM 10.7 MXFP8 E4M3 tiles in both the staged and Mega pipelines. It retains the training pipeline depth and writes the activations and column-quantized operands requested by the backward policy. Backward uses the DGRAD and WGRAD selection described above.
+
+Pass `--include-forward` to time one forward and its backward inside the same CUDA event interval. The [training timings](../benchmarks/results/sm107/mxfp8-training.csv) compare three full-pass measurements on the same GPU for each shape and pipeline. The baseline is revision `b76e0e0`, the backward-only optimization is revision `2af4e58`, and the combined optimization adds K=64 in training forward. The final column records a separate trial with the inference prefill stage depth. All columns use the same balanced single-rank workload.
+
+```sh
+python -m benchmarks.mxfp8_backward --include-forward --pipeline staged --ep 8 16 32 64 --width 1536 3072 6144
+python -m benchmarks.mxfp8_backward --include-forward --pipeline mega --ep 8 16 32 64 --width 1536 3072 6144
+```

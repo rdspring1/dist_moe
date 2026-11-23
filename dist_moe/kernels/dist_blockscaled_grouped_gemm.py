@@ -741,10 +741,12 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
             c_stage_dtype=c_stage_dtype,
         )
     forward_prefill = derive_pipeline_depth and problem_type == _FPROP
-    backward_mxfp8 = (
-        auto_selected_config and problem_type == _DGRAD and kernel_format is MXFP8_E4M3
+    auto_mxfp8 = (
+        auto_selected_config
+        and problem_type in (_FPROP, _DGRAD)
+        and kernel_format is MXFP8_E4M3
     )
-    if backward_mxfp8 or forward_prefill:
+    if auto_mxfp8 or forward_prefill:
         cfg = sm107_blockscaled_config(
             cfg, kernel_format, torch.cuda.get_device_capability(b.device)
         )
@@ -1493,10 +1495,12 @@ def _fused_dist_blockscaled_grouped_gemm_dispatch_quant_impl(  # noqa: C901
             c_stage_dtype=out_dtype,
         )
     forward_prefill = derive_pipeline_depth and problem_type == _FPROP
-    backward_mxfp8 = (
-        auto_selected_config and problem_type == _DGRAD and kernel_format is MXFP8_E4M3
+    auto_mxfp8 = (
+        auto_selected_config
+        and problem_type in (_FPROP, _DGRAD)
+        and kernel_format is MXFP8_E4M3
     )
-    if backward_mxfp8 or forward_prefill:
+    if auto_mxfp8 or forward_prefill:
         cfg = sm107_blockscaled_config(
             cfg, kernel_format, torch.cuda.get_device_capability(b.device)
         )

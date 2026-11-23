@@ -2555,11 +2555,11 @@ def chunked_mega_blockscaled_grouped_gemm_fprop_swiglu_fwd(  # noqa: C901
             use_global_scale_inv=use_global_scale_inv,
         )
         combine_tile_padded = config is not unpadded_config
-    if auto_inference_tuning:
+    if auto_inference_tuning or (auto_config and kernel_format is MXFP8_E4M3):
         config = sm107_blockscaled_config(
             config, kernel_format, torch.cuda.get_device_capability(w13.device)
         )
-        if config.get("USE_SM107") and rows >= 256 * groups:
+        if auto_inference_tuning and config.get("USE_SM107") and rows >= 256 * groups:
             _, quant_groups, reduction_slots = _chunked_mega_producer_topology(
                 format=format,
                 dispatch_quant_warps=8 if wide_gather else 4,

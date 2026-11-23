@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Measure one balanced EP rank's MXFP8 backward with prepared CUDA graphs."""
+"""Measure one balanced EP rank's MXFP8 training passes with prepared CUDA graphs."""
 
 import argparse
 import json
@@ -17,8 +17,10 @@ import torch.distributed as dist
 import dist_moe
 
 
-def measure(pipeline: str, ep: int, width: int) -> dict:
-    """Measure the complete backward after an untimed forward on one real rank."""
+def measure(
+    pipeline: str, ep: int, width: int, *, include_forward: bool = False
+) -> dict:
+    """Measure backward or the complete forward and backward on one real rank."""
     groups = 384 // ep
     tokens, hidden, top_k = 2048, 7168, 6
     config = dist_moe.Config(
@@ -64,9 +66,12 @@ def measure(pipeline: str, ep: int, width: int) -> dict:
         for _ in range(6):
             events = []
             for _ in range(10):
-                out = graph(*inputs)
                 start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
-                start.record()
+                if include_forward:
+                    start.record()
+                out = graph(*inputs)
+                if not include_forward:
+                    start.record()
                 torch.autograd.grad(out, (x_TD, scores_TK, w13_E2FD, w2_EDF), grad_TD)
                 end.record()
                 events.append((start, end))
@@ -74,6 +79,7 @@ def measure(pipeline: str, ep: int, width: int) -> dict:
             windows.append(sum(a.elapsed_time(b) for a, b in events) / len(events))
         return dict(
             pipeline=pipeline,
+            include_forward=include_forward,
             ep=ep,
             width=width,
             median_ms=statistics.median(windows[1:]),
@@ -93,6 +99,11 @@ def main() -> None:
         "--width", type=int, nargs="+", choices=(1536, 3072, 6144), default=[3072]
     )
     parser.add_argument("--pipeline", choices=("staged", "mega"), required=True)
+    parser.add_argument(
+        "--include-forward",
+        action="store_true",
+        help="Time the full training forward and backward together.",
+    )
     args = parser.parse_args()
     torch.cuda.set_device(0)
     with tempfile.TemporaryDirectory() as rendezvous:
@@ -107,7 +118,17 @@ def main() -> None:
             for ep in args.ep:
                 for width in args.width:
                     torch.manual_seed(17)
-                    print(json.dumps(measure(args.pipeline, ep, width)), flush=True)
+                    print(
+                        json.dumps(
+                            measure(
+                                args.pipeline,
+                                ep,
+                                width,
+                                include_forward=args.include_forward,
+                            )
+                        ),
+                        flush=True,
+                    )
         finally:
             dist.destroy_process_group()
 
