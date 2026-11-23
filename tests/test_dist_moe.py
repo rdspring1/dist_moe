@@ -1161,6 +1161,33 @@ class DistMoeConfigTest(unittest.TestCase):
                 fast_math=True,
             )
 
+    def test_sm107_instruction_selection(self) -> None:
+        """Enable wide atoms only for eligible SM107 formats and tile shapes."""
+        from dist_moe.kernels.blockscaled_config import (
+            MXFP4,
+            NVFP4,
+            build_blockscaled_config,
+            sm107_inference_config,
+        )
+
+        for fmt in (NVFP4,):
+            config = build_blockscaled_config(num_ctas=2, block_n=256, format=fmt)
+            for capability in ((10, 0), (10, 3)):
+                self.assertIs(sm107_inference_config(config, fmt, capability), config)
+            wide = sm107_inference_config(config, fmt, (10, 7))
+            self.assertTrue(wide["USE_SM107"])
+            self.assertFalse(wide["OVERLAPPING_ACCUM"])
+            self.assertEqual(wide["MMA_ATOM_N"], config["BLOCK_SIZE_N"])
+            self.assertNotIn("USE_SM107", config)
+            for unsupported in (
+                dict(config, BLOCK_SIZE_M=128),
+                dict(config, COMPACT_DECODE_ROWS=True),
+            ):
+                self.assertIs(
+                    sm107_inference_config(unsupported, fmt, (10, 7)), unsupported
+                )
+            self.assertIs(sm107_inference_config(config, MXFP4, (10, 7)), config)
+
     def test_nvfp4_requires_inference_and_aligned_dimensions(self) -> None:
         """Reject NVFP4 training and shapes outside the kernel contract."""
         nvfp4 = dist_moe.BlockScaledConfig(format=dist_moe.BlockScaledFormat.NVFP4)
@@ -2598,6 +2625,45 @@ class DistMoeKernelTest(unittest.TestCase):
                     0,
                 )
                 self._assert_planner_reset(context.activation_buffer)
+
+    def test_sm107_wide_k_interleaved_tail(self) -> None:
+        """Bound routed error for partial native MMA tiles using the NVFP4 wide-K descriptor."""
+        if torch.cuda.get_device_capability() != (10, 7):
+            self.skipTest("requires SM 10.7")
+        for fmt in (dist_moe.BlockScaledFormat.NVFP4,):
+            policy = dist_moe.BlockScaledConfig(format=fmt, pipeline="mega")
+            ctx, case, _, w13, w2 = self._create_case(
+                num_tokens=2017,
+                top_k=6,
+                num_experts=6,
+                hidden_dim=7168,
+                intermediate_dim=1536,
+                block_scaled=policy,
+            )
+            try:
+                with torch.no_grad():
+                    actual = dist_moe.routed_experts(
+                        *case,
+                        dist_moe.prepare_block_scaled_weight(
+                            w13, policy, inference=True, fuse_swiglu=True
+                        ),
+                        dist_moe.prepare_block_scaled_weight(
+                            w2, policy, inference=True
+                        ),
+                        ctx,
+                    )
+                # Sample both ends of the token axis, including the final partial tile.
+                sample = torch.tensor(
+                    [0, 1, 127, 255, 1023, 2014, 2015, 2016], device="cuda"
+                )
+                reference = _reference_moe(*(t[sample] for t in case), w13, w2)
+                _, _, max_error, min_cosine = _blockscaled_tolerance(fmt, "fwd")
+                self.assertLess(_relative_l2(actual[sample], reference), max_error)
+                self.assertGreater(
+                    _cosine_similarity(actual[sample], reference), min_cosine
+                )
+            finally:
+                ctx.close()
 
     def test_mxfp8_staged_and_mega_inference_match_reference(self) -> None:
         """Match staged/Mega MXFP8 inference to the dense reference.

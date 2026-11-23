@@ -240,3 +240,7 @@ source operation order, not combined into a reassociated factor. A generic
 transpose, `repeat_interleave`, or scale-layout reinterpretation is not
 equivalent to the prepared operand. Changes to these rules require numerical,
 capture, communication, and storage-lifetime validation.
+
+## SM 10.7 inference
+
+Eligible NVFP4 forward tiles use K=128 per instruction with eight 16-element scale groups per operand. The scale copy broadcasts each shared scale row across four TMEM datapath groups, and the MMA consumes the scale fragment paired with its operand. See the [SM 10.7 grouped inference measurements](sm107_inference_benchmark.md) for tile eligibility, resource limits, and measured stage depths.

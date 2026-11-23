@@ -14,6 +14,7 @@ cutlass-free geometry layer; this module owns the config policy that needs
 ``BlockScaledFormatSpec`` (and therefore cutlass).
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import cutlass
@@ -29,6 +30,7 @@ from .config import (
     derive_blockscaled_inference_geometry,
     EPILOGUE_SUBTILE_AUTO,
     initialize_blockscaled_inference_pipeline,
+    SMEM_LAUNCH_SAFETY_MARGIN_BYTES,
     STATIC_FPROP_SCHEDULER_SHAPES,
 )
 from .params import (
@@ -824,6 +826,46 @@ def _pick_literal_config(
     return _require_config_compatible(
         _copy_config(candidates[0]), m_multiple_of=m_multiple_of, N=N, G=G
     )
+
+
+def sm107_inference_config(
+    config: dict, format: BlockScaledFormatSpec, capability: tuple[int, int]
+) -> dict:
+    """Select wide-K MMA for full-width, single-atom inference tiles."""
+    if (
+        capability != (10, 7)
+        or format is not NVFP4
+        or config["NUM_MMAS"] != 1
+        or config["BLOCK_SIZE_M"] != 128 * config["NUM_CTAS"]
+        or config["BLOCK_SIZE_N"] not in (128, 256)
+        or config["BLOCK_SIZE_K"] != 256
+        or config.get("COMPACT_DECODE_ROWS")
+        or config.get("USE_SM103_ULTRA")
+    ):
+        return config
+    return dict(
+        config,
+        USE_SM107=True,
+        MMA_ATOM_N=config["BLOCK_SIZE_N"],
+        OVERLAPPING_ACCUM=False,
+    )
+
+
+def sm107_smem_budget() -> int:
+    """Return the launch-safe SM107 oversized shared memory budget in bytes."""
+    from cutlass.memory import get_smem_capacity_in_bytes
+
+    return get_smem_capacity_in_bytes("sm_107") - SMEM_LAUNCH_SAFETY_MARGIN_BYTES
+
+
+def sm107_prefill_stages(config: dict, estimate_bytes: Callable, **kwargs) -> dict:
+    """Fit up to eight operand stages around the fused kernel's other storage."""
+    budget = sm107_smem_budget()
+    for stages in range(8, config["NUM_SMEM_BUFFERS"], -1):
+        candidate = dict(config, NUM_SMEM_BUFFERS=stages)
+        if estimate_bytes(candidate, **kwargs) <= budget:
+            return candidate
+    return config
 
 
 def auto_blockscaled_config(

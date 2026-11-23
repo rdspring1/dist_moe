@@ -455,6 +455,7 @@ class DistBlockScaledGroupedGemmKernel(BlockScaledGroupedGemmKernel):
             block_m=config["BLOCK_SIZE_M"],
             block_n=config["BLOCK_SIZE_N"],
             block_k=config["BLOCK_SIZE_K"],
+            use_sm107=config.get("USE_SM107", False),
             use_sm103_ultra=config.get("USE_SM103_ULTRA", False),
             mma_atom_n=config.get("MMA_ATOM_N"),
             num_smem_buffers=config["NUM_SMEM_BUFFERS"],

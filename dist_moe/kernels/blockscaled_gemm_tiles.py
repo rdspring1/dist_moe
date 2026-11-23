@@ -407,12 +407,18 @@ _MXF8F6F4_FORMAT = {
 }
 
 
+def _uses_sm107_mma(op) -> bool:
+    """Identify double-K block-scaled atoms from their instruction shape."""
+    return op.a_dtype.width == 4 and op.shape_mnk[2] == 128
+
+
 def _runtime_n_mma_kind(op) -> tuple[str, int]:
     """PTX kind and the instruction descriptor without its N and scale-factor-id fields."""
     assert op.shape_mnk[0] == 256 and op.cta_group == tcgen05.CtaGroup.TWO
     assert op.a_major_mode == tcgen05.OperandMajorMode.K
     assert op.b_major_mode == tcgen05.OperandMajorMode.K
-    if isinstance(op, tcgen05.MmaMXF4NVF4Op):
+    wide = _uses_sm107_mma(op)
+    if isinstance(op, tcgen05.MmaMXF4NVF4Op) or (wide and op.a_dtype.width == 4):
         assert op.sf_vec_size == 16
         scale_format = 0 if op.sf_dtype == cutlass.Float8E4M3FN else 1
         kind, a_format, b_format = "mxf4nvf4.block_scale.block16", 1, 1
@@ -421,13 +427,21 @@ def _runtime_n_mma_kind(op) -> tuple[str, int]:
         scale_format = 1
         kind, a_format, b_format = "mxf4.block_scale.block32", 1, 1
     else:
-        assert isinstance(op, tcgen05.MmaMXF8F6F4Op) and op.sf_vec_size == 32
+        assert (wide or isinstance(op, tcgen05.MmaMXF8F6F4Op)) and op.sf_vec_size == 32
         scale_format = 1
         kind = "mxf8f6f4.block_scale.block32"
         a_format = _MXF8F6F4_FORMAT[op.a_dtype]
         b_format = _MXF8F6F4_FORMAT[op.b_dtype]
+    wide_descriptor = 0
+    if wide:
+        wide_descriptor = 1 << 3
+        kind += ".collector::a::discard"
     return kind, (
-        (a_format << 7) | (b_format << 10) | (scale_format << 23) | ((256 >> 4) << 24)
+        wide_descriptor
+        | (a_format << 7)
+        | (b_format << 10)
+        | (scale_format << 23)
+        | ((256 >> 4) << 24)
     )
 
 
@@ -478,14 +492,19 @@ def _blockscaled_mma_consumer_tile(  # noqa: C901
     sf_dtype: cutlass.Constexpr[type[cutlass.Numeric]],
     dynamic_n: cutlass.Int32 | None = None,
 ) -> cutlass.Int32:
+    paired_scales = _uses_sm107_mma(pipeline.tiled_mma.op)
     tiled_copy_s2t_sfa, tCsSFA_compact_s2t, tCtSFA_compact_s2t = (
         _mainloop_s2t_copy_and_partition(
-            pipeline.sSFA, pipeline.tCtSFA, cta_group, sf_dtype
+            pipeline.sSFA, pipeline.tCtSFA, cta_group, sf_dtype, use_sm107=paired_scales
         )
     )
     tiled_copy_s2t_sfb, tCsSFB_compact_s2t, tCtSFB_compact_s2t = (
         _mainloop_s2t_copy_and_partition(
-            pipeline.sSFB, pipeline.tCtSFB_copy, cta_group, sf_dtype
+            pipeline.sSFB,
+            pipeline.tCtSFB_copy,
+            cta_group,
+            sf_dtype,
+            use_sm107=paired_scales,
         )
     )
     tCtSFB_field = pipeline.tCtSFB
@@ -535,13 +554,11 @@ def _blockscaled_mma_consumer_tile(  # noqa: C901
                         (0, mma_m_idx),
                     )
                     if cutlass.const_expr(NUM_MMA_ATOMS_M > 1):
-                        sfa_iter = pipeline.tCtSFA[
-                            (None, mma_m_idx, kblock_idx)
-                        ].iterator
+                        sfa = pipeline.tCtSFA[(None, mma_m_idx, kblock_idx)]
                     else:
-                        sfa_iter = pipeline.tCtSFA[(None, None, kblock_idx)].iterator
-                    if cutlass.const_expr(not runtime_n):
-                        tiled_mma.set(tcgen05.Field.SFA, sfa_iter)
+                        sfa = pipeline.tCtSFA[(None, None, kblock_idx)]
+                    if cutlass.const_expr(not runtime_n and not paired_scales):
+                        tiled_mma.set(tcgen05.Field.SFA, sfa.iterator)
                     for mma_n_idx in cutlass.range_constexpr(NUM_MMA_ATOMS_N):
                         tCtAcc_atom = cute.local_tile(
                             tCtAcc_slot,
@@ -554,11 +571,9 @@ def _blockscaled_mma_consumer_tile(  # noqa: C901
                             (0, mma_n_idx),
                         )
                         if cutlass.const_expr(NUM_MMA_ATOMS_N > 1):
-                            sfb_iter = tCtSFB_field[
-                                (None, mma_n_idx, None, kblock_idx)
-                            ].iterator
+                            sfb = tCtSFB_field[(None, mma_n_idx, None, kblock_idx)]
                         else:
-                            sfb_iter = tCtSFB_field[(None, None, kblock_idx)].iterator
+                            sfb = tCtSFB_field[(None, None, kblock_idx)]
                         if cutlass.const_expr(runtime_n):
                             _runtime_n_mma(
                                 mma_kind,
@@ -566,14 +581,15 @@ def _blockscaled_mma_consumer_tile(  # noqa: C901
                                 tCtAcc_atom,
                                 tCrA_atom,
                                 tCrB_atom,
-                                sfa_iter,
-                                sfb_iter,
+                                sfa.iterator,
+                                sfb.iterator,
                                 cutlass.Boolean(kk > 0)
                                 if kblock_idx == 0
                                 else cutlass.Boolean(True),
                             )
                         else:
-                            tiled_mma.set(tcgen05.Field.SFB, sfb_iter)
+                            if cutlass.const_expr(not paired_scales):
+                                tiled_mma.set(tcgen05.Field.SFB, sfb.iterator)
                             tiled_mma.set(
                                 tcgen05.Field.ACCUMULATE,
                                 kk > 0 if kblock_idx == 0 else True,
@@ -581,8 +597,12 @@ def _blockscaled_mma_consumer_tile(  # noqa: C901
                             cute.gemm(
                                 tiled_mma,
                                 tCtAcc_atom,
-                                tCrA_atom,
-                                tCrB_atom,
+                                [tCrA_atom, sfa]
+                                if cutlass.const_expr(paired_scales)
+                                else tCrA_atom,
+                                [tCrB_atom, sfb]
+                                if cutlass.const_expr(paired_scales)
+                                else tCrB_atom,
                                 tCtAcc_atom,
                             )
             with cute.arch.elect_one():
@@ -957,6 +977,7 @@ def _mainloop_s2t_copy_and_partition(
     cta_group: cutlass.Constexpr,
     sf_dtype: cutlass.Constexpr[type[cutlass.Numeric]],
     use_sm103_ultra: cutlass.Constexpr[bool] = False,
+    use_sm107: cutlass.Constexpr[bool] = False,
 ) -> tuple:
     tCsSF_compact = cute.filter_zeros(sSF)
     tCtSF_compact = cute.filter_zeros(tSF)
@@ -977,6 +998,15 @@ def _mainloop_s2t_copy_and_partition(
     copy_atom_s2t = cute.make_copy_atom(tcgen05.Cp4x32x128bOp(cta_group), sf_dtype)
     tiled_copy_s2t = tcgen05.make_s2t_copy(copy_atom_s2t, tCtSF_for_copy)
     thr_copy_s2t = tiled_copy_s2t.get_slice(0)
+    if cutlass.const_expr(use_sm107):
+        # UTCCP broadcasts the shared scale rows to four TMEM datapath groups.
+        layout = tCsSF_compact.layout
+        mn = cute.append(cute.get(layout, mode=[0, 0]), cute.make_layout(4, stride=0))
+        atom = cute.append(cute.group_modes(mn, 0), cute.get(layout, mode=[0, 1]))
+        broadcast = cute.group_modes(atom, 0)
+        for i in range(1, 4):
+            broadcast = cute.append(broadcast, cute.get(layout, mode=[i]))
+        tCsSF_compact = cute.make_tensor(tCsSF_compact.iterator, broadcast)
     tCsSF_compact_s2t_ = thr_copy_s2t.partition_S(tCsSF_compact)
     tCsSF_compact_s2t = tcgen05.get_s2t_smem_desc_tensor(
         tiled_copy_s2t, tCsSF_compact_s2t_

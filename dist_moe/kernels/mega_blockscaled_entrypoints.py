@@ -803,6 +803,7 @@ def dispatch_bprop_kernel(  # noqa: C901
             self.num_tmem_alloc_cols,
             tmem_holding_buf,
             is_two_cta=(self.NUM_CTAS == 2),
+            arch=self.tmem_arch,
         )
 
     metadata_smem_ptr = cute.recast_ptr(
@@ -1056,6 +1057,7 @@ def dispatch_bprop_kernel(  # noqa: C901
                 tmem_ptr,
                 self.num_tmem_alloc_cols,
                 is_two_cta=(self.NUM_CTAS == 2),
+                arch=self.tmem_arch,
             )
     else:
         if cutlass.const_expr(self.mode == self.MEGA_FORWARD_MODE):

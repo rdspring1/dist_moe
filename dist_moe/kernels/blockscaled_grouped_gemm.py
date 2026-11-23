@@ -97,6 +97,7 @@ from .blockscaled_config import (  # noqa: F401
     MXFP8_E5M2,
     NVFP4,
     PRODUCTION_BLOCKSCALED_CONFIGS,
+    sm107_inference_config,
 )
 from .blockscaled_grouped_gemm_kernel import (  # noqa: F401
     _LaunchTensorBundle,
@@ -845,6 +846,19 @@ def _blockscaled_grouped_gemm(  # noqa: C901
                 == sm103.SM103_COMPUTE_CAPABILITY
             ),
         )
+        if problem_type == _FPROP and a.stride(-1) == b.stride(-1) == 1:
+            config = sm107_inference_config(
+                config, kernel_format, torch.cuda.get_device_capability(a.device)
+            )
+            if (
+                config.get("USE_SM107")
+                and config["NUM_CTAS"] == 2
+                and config["BLOCK_SIZE_N"] == 256
+                and out_dtype == torch.bfloat16
+                and problem.G <= 48
+                and config["NUM_SMEM_BUFFERS"] == 5
+            ):
+                config["NUM_SMEM_BUFFERS"] = 8
     cfg = config
     if cfg.get("USE_SM103_ULTRA", False):
         capability = torch.cuda.get_device_capability(a.device)

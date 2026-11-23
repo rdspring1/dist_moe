@@ -37,6 +37,7 @@ from .blockscaled_grouped_gemm import (
     BlockScaledFormatSpec,
     NVFP4,
 )
+from .blockscaled_grouped_gemm_kernel import _make_blockscaled_tiled_mma
 from .dispatch_quant import (
     _load_group_global_scale_inv,
     _wait_counter_at_least,
@@ -214,6 +215,24 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
     COMBINE_SWIGLU_FWD_ELEMS_PER_LANE: int = 4
     COMBINE_SWIGLU_FWD_COL_BLOCKS_PER_SCALE: int = 8
 
+    def _first_gemm_local_mma(self):
+        """Build the CTA-local partition used by both FC13 TMA descriptors."""
+        return _make_blockscaled_tiled_mma(
+            a_dtype=self.a_dtype,
+            b_dtype=self.b_dtype,
+            a_major_mode=self.a_major_mode,
+            b_major_mode=self.b_major_mode,
+            sf_dtype=self.sf_dtype,
+            sf_vec_size=self.sf_vec_size,
+            cta_group=tcgen05.CtaGroup.ONE,
+            mma_tiler_mn=(
+                self.BLOCK_SIZE_M // (self.NUM_CTAS * self.NUM_MMAS),
+                self.BLOCK_SIZE_N,
+            ),
+            use_sm103_ultra=False,
+            use_sm107=self.USE_SM107,
+        )
+
     def _make_first_gemm_tma_atoms(
         self,
         *,
@@ -238,19 +257,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
             # Ultra atoms are already CTA-local through the tv-shaped TMA
             # box, so the paired CTA-local FC13 rebuild is unnecessary.
             return tma_atoms, tma_tensors
-        local_mma = base.sm100_utils.make_blockscaled_trivial_tiled_mma(
-            self.a_dtype,
-            self.b_dtype,
-            self.a_major_mode,
-            self.b_major_mode,
-            self.sf_dtype,
-            self.sf_vec_size,
-            tcgen05.CtaGroup.ONE,
-            (
-                self.BLOCK_SIZE_M // (self.NUM_CTAS * self.NUM_MMAS),
-                self.BLOCK_SIZE_N,
-            ),
-        )
+        local_mma = self._first_gemm_local_mma()
         local_mma_tiler = (
             self.BLOCK_SIZE_M // self.NUM_CTAS,
             self.BLOCK_SIZE_N,
@@ -372,19 +379,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
             cute.slice_(local_mma_tiler, (None, 0, None)),
             (None, None, None),
         )
-        local_mma = base.sm100_utils.make_blockscaled_trivial_tiled_mma(
-            self.a_dtype,
-            self.b_dtype,
-            self.a_major_mode,
-            self.b_major_mode,
-            self.sf_dtype,
-            self.sf_vec_size,
-            tcgen05.CtaGroup.ONE,
-            (
-                self.BLOCK_SIZE_M // (self.NUM_CTAS * self.NUM_MMAS),
-                self.BLOCK_SIZE_N,
-            ),
-        )
+        local_mma = self._first_gemm_local_mma()
         local_thr_mma = local_mma.get_slice(0)
         tCgA = local_thr_mma.partition_A(gA)
         tCgSFA = local_thr_mma.partition_A(gSFA)
@@ -2003,6 +1998,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                 self.num_tmem_alloc_cols,
                 storage.tmem_holding_buf,
                 is_two_cta=(self.NUM_CTAS == 2),
+                arch=self.tmem_arch,
             )
         metadata_smem_ptr = cute.recast_ptr(
             storage.tensormap_buffer.data_ptr(), dtype=cutlass.Int32
@@ -2315,6 +2311,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                     tmem_ptr,
                     self.num_tmem_alloc_cols,
                     is_two_cta=(self.NUM_CTAS == 2),
+                    arch=self.tmem_arch,
                 )
         elif (warp_idx >= self.FORWARD_QUANT_FIRST_WARP) and (
             warp_idx < self.FORWARD_QUANT_LAST_WARP

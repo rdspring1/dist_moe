@@ -237,6 +237,7 @@ def dispatch_kernel(  # noqa: C901
             self.num_tmem_alloc_cols,
             tmem_holding_buf,
             is_two_cta=(self.NUM_CTAS == 2),
+            arch=self.tmem_arch,
         )
 
     split_sizes = stage_expert_metadata(
@@ -585,6 +586,7 @@ def dispatch_kernel(  # noqa: C901
                 tmem_ptr,
                 self.num_tmem_alloc_cols,
                 is_two_cta=(self.NUM_CTAS == 2),
+                arch=self.tmem_arch,
             )
     else:
         if warp_idx >= self.DISPATCH_QUANT_FIRST_WARP:
@@ -852,6 +854,7 @@ def combine_kernel(  # noqa: C901
             self.num_tmem_alloc_cols,
             tmem_holding_buf,
             is_two_cta=(self.NUM_CTAS == 2),
+            arch=self.tmem_arch,
         )
 
     split_sizes = stage_expert_metadata(
@@ -1199,6 +1202,7 @@ def combine_kernel(  # noqa: C901
                 tmem_ptr,
                 self.num_tmem_alloc_cols,
                 is_two_cta=(self.NUM_CTAS == 2),
+                arch=self.tmem_arch,
             )
     else:
         if cutlass.const_expr(self.mode == self.COMBINE_SWIGLU_FWD_MODE):

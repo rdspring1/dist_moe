@@ -48,6 +48,7 @@ from .activation_buffer_kernel import (
     _empty_qdata,
     _prepare_activation_buffer_launch_args,
 )
+from .blockscaled_config import sm107_inference_config, sm107_prefill_stages
 from .blockscaled_grouped_gemm import (
     _allocate_workspace,
     _compile_or_get,
@@ -84,6 +85,7 @@ from .dist_blockscaled_config import (
     _can_use_fused_combine_swiglu_quant,
     _can_use_fused_dispatch_quant,
     _dispatch_scale_copy_atom_aligned,
+    _estimate_staged_dist_smem_bytes,
     _make_dist_combine_config,
     _select_blockscaled_config,
     _staged_fp4_mma_atom_n,
@@ -738,6 +740,23 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
             combine_swiglu_k=combine_swiglu_k,
             c_stage_dtype=c_stage_dtype,
         )
+    if derive_pipeline_depth and problem_type == _FPROP:
+        cfg = sm107_inference_config(
+            cfg, kernel_format, torch.cuda.get_device_capability(b.device)
+        )
+        if cfg.get("USE_SM107") and problem.GM >= 256 * problem.G:
+            cfg = sm107_prefill_stages(
+                cfg,
+                _estimate_staged_dist_smem_bytes,
+                format=kernel_format,
+                groups=problem.G,
+                mode=mode,
+                blockscaled_dispatch=False,
+                nvfp4_high_throughput=nvfp4_high_throughput,
+                use_global_scale_inv=use_global_scale_inv,
+                combine_swiglu_k=combine_swiglu_k,
+                c_stage_dtype=c_stage_dtype,
+            )
     kernel = _get_dist_blockscaled_kernel(
         config=cfg,
         problem_type=problem_type,
@@ -1469,6 +1488,23 @@ def _fused_dist_blockscaled_grouped_gemm_dispatch_quant_impl(  # noqa: C901
             combine_swiglu_k=None,
             c_stage_dtype=out_dtype,
         )
+    if derive_pipeline_depth and problem_type == _FPROP:
+        cfg = sm107_inference_config(
+            cfg, kernel_format, torch.cuda.get_device_capability(b.device)
+        )
+        if cfg.get("USE_SM107") and problem.GM >= 256 * problem.G:
+            cfg = sm107_prefill_stages(
+                cfg,
+                _estimate_staged_dist_smem_bytes,
+                format=kernel_format,
+                groups=problem.G,
+                mode=DistBlockScaledGroupedGemmKernel.DISPATCH_MODE,
+                blockscaled_dispatch=blockscaled_dispatch,
+                nvfp4_high_throughput=nvfp4_high_throughput,
+                use_global_scale_inv=use_global_scale_inv,
+                combine_swiglu_k=None,
+                c_stage_dtype=out_dtype,
+            )
     kernel = _get_dist_blockscaled_kernel(
         config=cfg,
         problem_type=problem_type,

@@ -81,6 +81,8 @@ The PyTorch wheel runtime and the toolkit used for JIT compilation are separate
 compatibility requirements. Importing `dist_moe` does not initialize CUDA or a
 process group, but execution has no CPU fallback.
 
+For SM 10.7 inference, see the [validated toolchain and grouped projection measurements](docs/sm107_inference_benchmark.md).
+
 ### Verify the installation
 
 The complete runtime test file requires at least two supported Blackwell GPUs.
@@ -170,8 +172,7 @@ try:
     )
     global_token_ids_T = rank * T + torch.arange(T, device=device)
     topk_expert_ids_TK = (
-        global_token_ids_T[:, None] * K
-        + torch.arange(K, device=device)[None, :]
+        global_token_ids_T[:, None] * K + torch.arange(K, device=device)[None, :]
     ) % E
     topk_scores_TK = torch.full(
         (T, K),

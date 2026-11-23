@@ -230,7 +230,22 @@ def _make_blockscaled_tiled_mma(
     cta_group: tcgen05.CtaGroup,
     mma_tiler_mn: tuple[int, int],
     use_sm103_ultra: bool,
+    use_sm107: bool,
 ) -> cute.TiledMma:
+    """Build a block-scaled MMA atom for the selected instruction family."""
+    if use_sm107:
+        from cutlass.utils import sm107
+
+        return sm107.make_blockscaled_trivial_tiled_mma(
+            a_dtype,
+            b_dtype,
+            a_major_mode,
+            b_major_mode,
+            sf_dtype,
+            sf_vec_size,
+            cta_group,
+            (*mma_tiler_mn, 128),
+        )
     if use_sm103_ultra:
         if a_dtype != b_dtype:
             raise TypeError("SM103 ultra MMA requires matching A/B dtypes")
@@ -310,6 +325,7 @@ class BlockScaledGroupedGemmKernel:
         kloop_unroll: int = 2,
         num_warps: int | None = None,
         use_sm103_ultra: bool = False,
+        use_sm107: bool = False,
         schedule_rotation: bool = True,
     ):
         self.problem_type: int = problem_type
@@ -353,6 +369,7 @@ class BlockScaledGroupedGemmKernel:
         self.OVERLAPPING_ACCUM: bool = overlapping_accum
         self.STATIC_SCHEDULER: bool = static_scheduler
         self.KLOOP_UNROLL: int = kloop_unroll
+        self.USE_SM107 = use_sm107
         self.USE_SM103_ULTRA: bool = use_sm103_ultra
         self.TOTAL_WARPS = num_warps if num_warps is not None else self.TOTAL_WARPS
         self.THREADS_PER_CTA = 32 * self.TOTAL_WARPS
@@ -385,6 +402,8 @@ class BlockScaledGroupedGemmKernel:
             if self.USE_SM103_ULTRA
             else (64 if self.format.a_dtype.width == 4 else 32)
         )
+        if self.USE_SM107:
+            mma_instruction_k *= 2
         if self.BLOCK_SIZE_K % mma_instruction_k != 0:
             raise ValueError(
                 f"BLOCK_SIZE_K={self.BLOCK_SIZE_K} must be divisible by "
@@ -464,6 +483,7 @@ class BlockScaledGroupedGemmKernel:
             static_scheduler=config.get("STATIC_SCHEDULER", False),
             kloop_unroll=config.get("KLOOP_UNROLL", 2),
             num_warps=config.get("NUM_WARPS"),
+            use_sm107=config.get("USE_SM107", False),
             use_sm103_ultra=config.get("USE_SM103_ULTRA", False),
         )
 
@@ -512,6 +532,7 @@ class BlockScaledGroupedGemmKernel:
             sf_vec_size=self.sf_vec_size,
             cta_group=self.cta_group,
             mma_tiler_mn=atom_mma_tiler_mn,
+            use_sm107=self.USE_SM107,
             use_sm103_ultra=self.USE_SM103_ULTRA,
         )
         # SFB uses cta_group=ONE so the SFB partition's per-CTA M
@@ -525,6 +546,7 @@ class BlockScaledGroupedGemmKernel:
             sf_vec_size=self.sf_vec_size,
             cta_group=tcgen05.CtaGroup.ONE,
             mma_tiler_mn=atom_mma_tiler_mn_sfb,
+            use_sm107=self.USE_SM107,
             use_sm103_ultra=self.USE_SM103_ULTRA,
         )
 
@@ -665,11 +687,9 @@ class BlockScaledGroupedGemmKernel:
             self.c_dtype, self.c_layout, self.epi_tile, self.NUM_C_STAGES
         )
 
-        # Block-scaled SFA/SFB live in TMEM after the accumulator, so the
-        # acc-only allocation size is not enough — the s2t SF copy would
-        # write OOB. Always grab the full 512 TMEM cols. (Bug: BN=256 IMA
-        # — at BN=128 the SFB copy happened to fit; at BN=256 it didn't.)
-        self.num_tmem_alloc_cols = cute.arch.get_max_tmem_alloc_cols("sm_100")
+        # SFA and SFB occupy columns immediately after the accumulator stages.
+        self.tmem_arch = "sm_107" if self.USE_SM107 else "sm_100"
+        self.num_tmem_alloc_cols = cute.arch.get_max_tmem_alloc_cols(self.tmem_arch)
 
     @property
     def _a_global_scale_inv_smem_size(self) -> int:
@@ -2311,6 +2331,12 @@ class BlockScaledGroupedGemmKernel:
             dtype=self.sf_dtype,
         )
         tCtSFB = cute.make_tensor(sfb_tmem_ptr, tCtSFB_layout)
+        if self.USE_SM107:
+            occupied_cols = sum(
+                tcgen05.find_tmem_tensor_col_offset(t)
+                for t in (tCtAcc_base, tCtSFA, tCtSFB)
+            )
+            assert occupied_cols <= self.num_tmem_alloc_cols
         tCtSFB_field = cute.make_tensor(
             tCtSFB.iterator,
             self._make_sfb_tmem_field_layout(tCtSFB_layout),

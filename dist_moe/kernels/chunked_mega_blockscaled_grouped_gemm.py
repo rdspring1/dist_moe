@@ -35,7 +35,12 @@ from .activation_buffer_kernel import (
     _dispatch_quant_source_dtype_from_torch,
     _quantized_storage_dim,
 )
-from .blockscaled_config import _host_tensormaps_available
+from .blockscaled_config import (
+    _host_tensormaps_available,
+    sm107_inference_config,
+    sm107_prefill_stages,
+    sm107_smem_budget,
+)
 from .blockscaled_grouped_gemm import (
     _config_cache_key,
     _format_uses_fp4,
@@ -643,6 +648,8 @@ def _verify_chunked_mega_smem_estimate(
             f"estimated={estimated}, actual={actual}, config={config}"
         )
     budget = BLACKWELL_DYNAMIC_SMEM_BUDGET_BYTES - SMEM_LAUNCH_SAFETY_MARGIN_BYTES
+    if config.get("USE_SM107"):
+        budget = sm107_smem_budget()
     if actual > budget:
         raise AssertionError(
             "chunked MegaMoE kernel storage exceeds the launch-safe budget: "
@@ -2548,6 +2555,27 @@ def chunked_mega_blockscaled_grouped_gemm_fprop_swiglu_fwd(  # noqa: C901
             use_global_scale_inv=use_global_scale_inv,
         )
         combine_tile_padded = config is not unpadded_config
+    if auto_inference_tuning:
+        config = sm107_inference_config(
+            config, kernel_format, torch.cuda.get_device_capability(w13.device)
+        )
+        if config.get("USE_SM107") and rows >= 256 * groups:
+            _, quant_groups, reduction_slots = _chunked_mega_producer_topology(
+                format=format,
+                dispatch_quant_warps=8 if wide_gather else 4,
+                nvfp4_high_throughput=nvfp4_high_throughput,
+                nvfp4_wide_row_quant=nvfp4_wide_row_quant,
+                nvfp4_row_quant_warps=nvfp4_row_quant_warps,
+            )
+            config = sm107_prefill_stages(
+                config,
+                _estimate_chunked_mega_smem_bytes,
+                format=kernel_format,
+                groups=groups,
+                dispatch_quant_groups=quant_groups,
+                nvfp4_row_reduction_slots=reduction_slots,
+                use_global_scale_inv=use_global_scale_inv,
+            )
     kernel = _get_chunked_kernel(
         config=config,
         format=kernel_format,
