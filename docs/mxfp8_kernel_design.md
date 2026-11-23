@@ -330,3 +330,7 @@ saved independently of this activation decision unless the caller supplies
 prepared operands.
 
 The synchronous block-scaled implementation is not part of the public runtime.
+
+## SM 10.7 inference
+
+Eligible MXFP8 forward tiles use K=64 per instruction with two 32-element scale groups per operand. The scale copy broadcasts each shared scale row across four TMEM datapath groups, and the MMA consumes the scale fragment paired with its operand. See the [SM 10.7 grouped inference measurements](sm107_inference_benchmark.md) for tile eligibility, resource limits, and measured stage depths.

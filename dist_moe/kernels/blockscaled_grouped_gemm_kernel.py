@@ -244,7 +244,7 @@ def _make_blockscaled_tiled_mma(
             sf_dtype,
             sf_vec_size,
             cta_group,
-            (*mma_tiler_mn, 128),
+            (*mma_tiler_mn, 128 if a_dtype.width == 4 else 64),
         )
     if use_sm103_ultra:
         if a_dtype != b_dtype:

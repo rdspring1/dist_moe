@@ -1165,12 +1165,13 @@ class DistMoeConfigTest(unittest.TestCase):
         """Enable wide atoms only for eligible SM107 formats and tile shapes."""
         from dist_moe.kernels.blockscaled_config import (
             MXFP4,
+            MXFP8_E4M3,
             NVFP4,
             build_blockscaled_config,
             sm107_inference_config,
         )
 
-        for fmt in (NVFP4,):
+        for fmt in (NVFP4, MXFP8_E4M3):
             config = build_blockscaled_config(num_ctas=2, block_n=256, format=fmt)
             for capability in ((10, 0), (10, 3)):
                 self.assertIs(sm107_inference_config(config, fmt, capability), config)
@@ -2627,10 +2628,13 @@ class DistMoeKernelTest(unittest.TestCase):
                 self._assert_planner_reset(context.activation_buffer)
 
     def test_sm107_wide_k_interleaved_tail(self) -> None:
-        """Bound routed error for partial native MMA tiles using the NVFP4 wide-K descriptor."""
+        """Bound routed error for partial native MMA tiles using both wide-K descriptors."""
         if torch.cuda.get_device_capability() != (10, 7):
             self.skipTest("requires SM 10.7")
-        for fmt in (dist_moe.BlockScaledFormat.NVFP4,):
+        for fmt in (
+            dist_moe.BlockScaledFormat.MXFP8_E4M3,
+            dist_moe.BlockScaledFormat.NVFP4,
+        ):
             policy = dist_moe.BlockScaledConfig(format=fmt, pipeline="mega")
             ctx, case, _, w13, w2 = self._create_case(
                 num_tokens=2017,

@@ -834,11 +834,11 @@ def sm107_inference_config(
     """Select wide-K MMA for full-width, single-atom inference tiles."""
     if (
         capability != (10, 7)
-        or format is not NVFP4
+        or format not in (NVFP4, MXFP8_E4M3)
         or config["NUM_MMAS"] != 1
         or config["BLOCK_SIZE_M"] != 128 * config["NUM_CTAS"]
         or config["BLOCK_SIZE_N"] not in (128, 256)
-        or config["BLOCK_SIZE_K"] != 256
+        or config["BLOCK_SIZE_K"] != (256 if format is NVFP4 else 128)
         or config.get("COMPACT_DECODE_ROWS")
         or config.get("USE_SM103_ULTRA")
     ):

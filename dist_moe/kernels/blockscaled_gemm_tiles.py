@@ -409,7 +409,7 @@ _MXF8F6F4_FORMAT = {
 
 def _uses_sm107_mma(op) -> bool:
     """Identify double-K block-scaled atoms from their instruction shape."""
-    return op.a_dtype.width == 4 and op.shape_mnk[2] == 128
+    return op.shape_mnk[2] == (128 if op.a_dtype.width == 4 else 64)
 
 
 def _runtime_n_mma_kind(op) -> tuple[str, int]:
@@ -434,7 +434,13 @@ def _runtime_n_mma_kind(op) -> tuple[str, int]:
         b_format = _MXF8F6F4_FORMAT[op.b_dtype]
     wide_descriptor = 0
     if wide:
-        wide_descriptor = 1 << 3
+        # K=128 NVFP4 selects bit 3. K=64 MXFP8 selects bit 31 and the
+        # block_scale instruction form with an implicit scale-vector size.
+        if op.a_dtype.width == 4:
+            wide_descriptor = 1 << 3
+        else:
+            wide_descriptor = -(1 << 31)
+            kind = "mxf8f6f4.block_scale"
         kind += ".collector::a::discard"
     return kind, (
         wide_descriptor

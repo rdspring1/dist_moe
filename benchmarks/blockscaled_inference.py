@@ -146,7 +146,7 @@ def measure(graphs):
 def main():
     """Emit a JSON record per format, local expert count, and intermediate width."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--format", choices=("nvfp4",), required=True)
+    parser.add_argument("--format", choices=("nvfp4", "mxfp8"), required=True)
     parser.add_argument(
         "--ep", choices=(8, 16, 32, 64), type=int, nargs="+", default=(8, 16, 32, 64)
     )
@@ -173,7 +173,7 @@ def main():
     if args.wide and torch.cuda.get_device_capability() != (10, 7):
         parser.error("--wide requires SM 10.7")
     props = torch.cuda.get_device_properties(0)
-    fmt = NVFP4
+    fmt = NVFP4 if args.format == "nvfp4" else MXFP8_E4M3
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     for ep in args.ep:
         for width in args.width:

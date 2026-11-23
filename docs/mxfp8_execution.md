@@ -260,11 +260,17 @@ Inference preparation defaults to 1x32 blocks: each row has its own scale per
 
 ```python
 prepared_w13 = dist_moe.prepare_block_scaled_weight(
-    w13_EFD, policy, inference=True, weight_block_size="32x32",
+    w13_EFD,
+    policy,
+    inference=True,
+    weight_block_size="32x32",
     fuse_swiglu=policy.pipeline == "mega",
 )
 prepared_w2 = dist_moe.prepare_block_scaled_weight(
-    w2_EDF, policy, inference=True, weight_block_size="32x32",
+    w2_EDF,
+    policy,
+    inference=True,
+    weight_block_size="32x32",
 )
 ```
 
