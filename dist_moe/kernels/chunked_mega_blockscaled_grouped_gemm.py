@@ -39,7 +39,6 @@ from .blockscaled_config import (
     _host_tensormaps_available,
     sm107_blockscaled_config,
     sm107_prefill_stages,
-    sm107_smem_budget,
 )
 from .blockscaled_grouped_gemm import (
     _config_cache_key,
@@ -648,8 +647,6 @@ def _verify_chunked_mega_smem_estimate(
             f"estimated={estimated}, actual={actual}, config={config}"
         )
     budget = BLACKWELL_DYNAMIC_SMEM_BUDGET_BYTES - SMEM_LAUNCH_SAFETY_MARGIN_BYTES
-    if config.get("USE_SM107"):
-        budget = sm107_smem_budget()
     if actual > budget:
         raise AssertionError(
             "chunked MegaMoE kernel storage exceeds the launch-safe budget: "

@@ -24,6 +24,7 @@ from . import sm103_blockscaled_helpers as sm103
 from .config import (
     _FPROP,
     _WGRAD,
+    BLACKWELL_DYNAMIC_SMEM_BUDGET_BYTES,
     BLOCKSCALED_GROUPED_GEMM_M_ALIGNMENT,
     DEFAULT_BLOCKSCALED_GROUPED_GEMM_M_MULTIPLE_OF,
     derive_blockscaled_grouped_gemm_config,
@@ -851,21 +852,14 @@ def sm107_blockscaled_config(
     )
 
 
-def sm107_smem_budget() -> int:
-    """Return the launch-safe SM107 oversized shared memory budget in bytes."""
-    from cutlass.memory import get_smem_capacity_in_bytes
-
-    return get_smem_capacity_in_bytes("sm_107") - SMEM_LAUNCH_SAFETY_MARGIN_BYTES
-
-
 def sm107_prefill_stages(config: dict, estimate_bytes: Callable, **kwargs) -> dict:
-    """Fit up to eight operand stages around the fused kernel's other storage."""
-    budget = sm107_smem_budget()
-    for stages in range(8, config["NUM_SMEM_BUFFERS"], -1):
+    """Select the deepest prefill pipeline that fits the Blackwell CTA budget."""
+    budget = BLACKWELL_DYNAMIC_SMEM_BUDGET_BYTES - SMEM_LAUNCH_SAFETY_MARGIN_BYTES
+    for stages in range(max(8, config["NUM_SMEM_BUFFERS"]), 1, -1):
         candidate = dict(config, NUM_SMEM_BUFFERS=stages)
         if estimate_bytes(candidate, **kwargs) <= budget:
             return candidate
-    return config
+    raise ValueError("no SM 10.7 prefill pipeline fits the shared-memory budget")
 
 
 def auto_blockscaled_config(

@@ -1189,6 +1189,24 @@ class DistMoeConfigTest(unittest.TestCase):
                 )
             self.assertIs(sm107_blockscaled_config(config, MXFP4, (10, 7)), config)
 
+    def test_sm107_prefill_smem_budget(self) -> None:
+        """Fit by bytes including launch margin, even for an oversized input preset."""
+        from dist_moe.kernels.blockscaled_config import sm107_prefill_stages
+
+        config = {"NUM_SMEM_BUFFERS": 6}
+        for stage_bytes, expected in (
+            (42 * 1024, 5),
+            (28 * 1024, 8),
+            (226 * 1024 // 8 + 1, 7),
+        ):
+            selected = sm107_prefill_stages(
+                config, lambda cfg: cfg["NUM_SMEM_BUFFERS"] * stage_bytes
+            )
+            self.assertEqual(selected["NUM_SMEM_BUFFERS"], expected)
+        with self.assertRaisesRegex(ValueError, "shared-memory budget"):
+            sm107_prefill_stages(config, lambda cfg: 227 * 1024)
+        self.assertEqual(config["NUM_SMEM_BUFFERS"], 6)
+
     def test_sm107_mega_backward_density_selection(self) -> None:
         """Use wide Mega below the measured row-capacity cutoff and retain the dense preset."""
         from dist_moe.kernels.blockscaled_config import (
