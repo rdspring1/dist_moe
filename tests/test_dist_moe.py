@@ -1222,6 +1222,30 @@ class DistMoeConfigTest(unittest.TestCase):
                 self.assertEqual(selected["NUM_TMEM_BUFFERS"], 1)
                 self.assertEqual(selected["NUM_C_STAGES"], 1)
 
+    def test_staged_two_m_atoms_training_and_prefill(self) -> None:
+        """Cover the inference width boundary and the activation-backed training policy."""
+        from dist_moe.kernels.dist_blockscaled_config import _use_staged_two_m_atoms
+        from dist_moe.kernels.grouped_gemm import _DGRAD, _FPROP, _WGRAD
+
+        buffer = torch.empty(0)
+        for problem, prefill, storage, width, expected in (
+            (_FPROP, True, buffer, 3071, False),
+            (_FPROP, True, buffer, 3072, True),
+            (_FPROP, False, buffer, 1536, True),
+            (_FPROP, False, None, 1536, False),
+            (_DGRAD, False, buffer, 1536, True),
+            (_WGRAD, False, buffer, 6144, False),
+        ):
+            self.assertEqual(
+                _use_staged_two_m_atoms(
+                    problem_type=problem,
+                    inference_prefill=prefill,
+                    activation_buffer=storage,
+                    expert_width=width,
+                ),
+                expected,
+            )
+
     def test_sm107_prefill_smem_budget(self) -> None:
         """Fit by bytes including launch margin, even for an oversized input preset."""
         from dist_moe.kernels.blockscaled_config import sm107_prefill_stages

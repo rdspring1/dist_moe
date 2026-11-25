@@ -91,6 +91,7 @@ from .dist_blockscaled_config import (
     _staged_fp4_mma_atom_n,
     _staged_use_device_tensormaps,
     _use_nvfp4_high_throughput_producers,
+    _use_staged_two_m_atoms,
     _use_t6_mxfp8_prefill_fc13_unroll,
     _uses_derived_staged_pipeline,
     _validate_swap_ab_row_multiple,
@@ -743,7 +744,13 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
             cfg,
             kernel_format,
             torch.cuda.get_device_capability(b.device),
-            staged_two_m_atoms=auto_mxfp8 and forward_prefill and problem.K >= 3072,
+            staged_two_m_atoms=auto_mxfp8
+            and _use_staged_two_m_atoms(
+                problem_type=problem_type,
+                inference_prefill=forward_prefill,
+                activation_buffer=activation_buffer,
+                expert_width=problem.K,
+            ),
         )
         if cfg.get("USE_SM107") and (
             cfg["NUM_MMAS"] == 2 or (forward_prefill and problem.GM >= 256 * problem.G)
@@ -1502,7 +1509,13 @@ def _fused_dist_blockscaled_grouped_gemm_dispatch_quant_impl(  # noqa: C901
             cfg,
             kernel_format,
             torch.cuda.get_device_capability(b.device),
-            staged_two_m_atoms=auto_mxfp8 and forward_prefill and problem.N // 2 >= 3072,
+            staged_two_m_atoms=auto_mxfp8
+            and _use_staged_two_m_atoms(
+                problem_type=problem_type,
+                inference_prefill=forward_prefill,
+                activation_buffer=activation_buffer,
+                expert_width=problem.N // 2,
+            ),
         )
         if cfg.get("USE_SM107") and (
             cfg["NUM_MMAS"] == 2 or (forward_prefill and problem.GM >= 256 * problem.G)

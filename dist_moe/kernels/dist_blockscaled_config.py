@@ -48,6 +48,8 @@ from .dist_blockscaled_grouped_gemm_kernel import (
     DistBlockScaledGroupedGemmKernel,
 )
 
+from .grouped_gemm import _DGRAD, _FPROP
+
 logger: logging.Logger = logging.getLogger(__name__)
 _DEFAULT_M_MULTIPLE_OF = DEFAULT_BLOCKSCALED_GROUPED_GEMM_M_MULTIPLE_OF
 
@@ -638,6 +640,21 @@ def _dispatch_scale_copy_atom_aligned(
     # must cover a multiple of CUBLAS_BLOCKED_SCALE_COLS_PER_ATOM scale
     # columns; partial atoms must stay on the scalar path.
     return hidden_dim % (CUBLAS_BLOCKED_SCALE_COLS_PER_ATOM * format.sf_vec_size) == 0
+
+
+def _use_staged_two_m_atoms(
+    *,
+    problem_type: int,
+    inference_prefill: bool,
+    activation_buffer: torch.Tensor | None,
+    expert_width: int,
+) -> bool:
+    """Select the paired tile for staged training or wide inference projections."""
+    if problem_type == _DGRAD:
+        return True
+    if problem_type != _FPROP:
+        return False
+    return expert_width >= 3072 if inference_prefill else activation_buffer is not None
 
 
 def _select_blockscaled_config(
