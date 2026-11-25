@@ -684,14 +684,6 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
         problem_type=problem_type,
         config=cfg,
     )
-    use_device_tensormaps = _staged_use_device_tensormaps(
-        cfg,
-        activation_buffer=activation_buffer,
-        problem_type=problem_type,
-        m_multiple_of=m_multiple_of,
-        n=problem.N,
-        groups=problem.G,
-    )
     num_clusters = max(1, num_sms // cfg["NUM_CTAS"])
 
     local_rank = symm_mem_buffer.hdl.rank
@@ -748,9 +740,14 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
     )
     if auto_mxfp8 or forward_prefill:
         cfg = sm107_blockscaled_config(
-            cfg, kernel_format, torch.cuda.get_device_capability(b.device)
+            cfg,
+            kernel_format,
+            torch.cuda.get_device_capability(b.device),
+            staged_two_m_atoms=auto_mxfp8 and forward_prefill and problem.K >= 3072,
         )
-        if forward_prefill and cfg.get("USE_SM107") and problem.GM >= 256 * problem.G:
+        if cfg.get("USE_SM107") and (
+            cfg["NUM_MMAS"] == 2 or (forward_prefill and problem.GM >= 256 * problem.G)
+        ):
             cfg = sm107_prefill_stages(
                 cfg,
                 _estimate_staged_dist_smem_bytes,
@@ -763,6 +760,14 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
                 combine_swiglu_k=combine_swiglu_k,
                 c_stage_dtype=c_stage_dtype,
             )
+    use_device_tensormaps = _staged_use_device_tensormaps(
+        cfg,
+        activation_buffer=activation_buffer,
+        problem_type=problem_type,
+        m_multiple_of=m_multiple_of,
+        n=problem.N,
+        groups=problem.G,
+    )
     kernel = _get_dist_blockscaled_kernel(
         config=cfg,
         problem_type=problem_type,
@@ -1459,14 +1464,6 @@ def _fused_dist_blockscaled_grouped_gemm_dispatch_quant_impl(  # noqa: C901
                 "interleaved FC13 dispatch requires a 64- or 128-column "
                 f"epilogue tile; got {epilogue_cols}"
             )
-    use_device_tensormaps = _staged_use_device_tensormaps(
-        cfg,
-        activation_buffer=activation_buffer,
-        problem_type=problem_type,
-        m_multiple_of=m_multiple_of,
-        n=problem.N,
-        groups=problem.G,
-    )
     num_clusters = max(1, num_sms // cfg["NUM_CTAS"])
 
     local_rank = symm_mem_buffer.hdl.rank
@@ -1502,9 +1499,14 @@ def _fused_dist_blockscaled_grouped_gemm_dispatch_quant_impl(  # noqa: C901
     )
     if auto_mxfp8 or forward_prefill:
         cfg = sm107_blockscaled_config(
-            cfg, kernel_format, torch.cuda.get_device_capability(b.device)
+            cfg,
+            kernel_format,
+            torch.cuda.get_device_capability(b.device),
+            staged_two_m_atoms=auto_mxfp8 and forward_prefill and problem.N // 2 >= 3072,
         )
-        if forward_prefill and cfg.get("USE_SM107") and problem.GM >= 256 * problem.G:
+        if cfg.get("USE_SM107") and (
+            cfg["NUM_MMAS"] == 2 or (forward_prefill and problem.GM >= 256 * problem.G)
+        ):
             cfg = sm107_prefill_stages(
                 cfg,
                 _estimate_staged_dist_smem_bytes,
@@ -1517,6 +1519,14 @@ def _fused_dist_blockscaled_grouped_gemm_dispatch_quant_impl(  # noqa: C901
                 combine_swiglu_k=None,
                 c_stage_dtype=out_dtype,
             )
+    use_device_tensormaps = _staged_use_device_tensormaps(
+        cfg,
+        activation_buffer=activation_buffer,
+        problem_type=problem_type,
+        m_multiple_of=m_multiple_of,
+        n=problem.N,
+        groups=problem.G,
+    )
     kernel = _get_dist_blockscaled_kernel(
         config=cfg,
         problem_type=problem_type,

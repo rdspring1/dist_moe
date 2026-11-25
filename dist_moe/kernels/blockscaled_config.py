@@ -830,9 +830,13 @@ def _pick_literal_config(
 
 
 def sm107_blockscaled_config(
-    config: dict, format: BlockScaledFormatSpec, capability: tuple[int, int]
+    config: dict,
+    format: BlockScaledFormatSpec,
+    capability: tuple[int, int],
+    *,
+    staged_two_m_atoms: bool = False,
 ) -> dict:
-    """Select wide-K MMA for full-width, single-atom block-scaled tiles."""
+    """Select wide-K MMA and optionally pair M atoms for staged MXFP8."""
     if (
         capability != (10, 7)
         or format not in (NVFP4, MXFP8_E4M3)
@@ -844,12 +848,21 @@ def sm107_blockscaled_config(
         or config.get("USE_SM103_ULTRA")
     ):
         return config
-    return dict(
+    cfg = dict(
         config,
         USE_SM107=True,
         MMA_ATOM_N=config["BLOCK_SIZE_N"],
         OVERLAPPING_ACCUM=False,
     )
+    if (
+        staged_two_m_atoms
+        and format is MXFP8_E4M3
+        and cfg["NUM_CTAS"] == 2
+        and cfg["BLOCK_SIZE_N"] == 256
+        and cfg["SWAP_AB"]
+    ):
+        cfg.update(BLOCK_SIZE_M=512, NUM_MMAS=2, NUM_TMEM_BUFFERS=1, NUM_C_STAGES=1)
+    return cfg
 
 
 def sm107_prefill_stages(config: dict, estimate_bytes: Callable, **kwargs) -> dict:

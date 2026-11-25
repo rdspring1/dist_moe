@@ -1518,11 +1518,22 @@ class DistBlockScaledGroupedGemmKernel(BlockScaledGroupedGemmKernel):
             else:
                 m_local = local_token
                 n_local = local_hidden
+            if cutlass.const_expr(
+                self.USE_SM107
+                and self.SWAP_AB
+                and self.NUM_CTAS == 2
+                and NUM_MMA_ATOMS_M == 2
+            ):
+                # Each CTA owns adjacent hidden slices in the permuted two-atom tile.
+                m_offset = cluster_cta_rank * cutlass.Int32(
+                    self.BLOCK_SIZE_M // self.NUM_CTAS
+                ) + cutlass.Int32(mma_m_idx * ATOM_CTA_M)
+            else:
+                m_offset = cutlass.Int32(
+                    mma_m_idx * ATOM_M
+                ) + cluster_cta_rank * cutlass.Int32(ATOM_CTA_M)
             m_global = (
-                tile_m_idx * cutlass.Int32(self.BLOCK_SIZE_M)
-                + cutlass.Int32(mma_m_idx * ATOM_M)
-                + cluster_cta_rank * cutlass.Int32(ATOM_CTA_M)
-                + m_local
+                tile_m_idx * cutlass.Int32(self.BLOCK_SIZE_M) + m_offset + m_local
             )
             n_global = (
                 tile_n_idx * cutlass.Int32(self.BLOCK_SIZE_N)

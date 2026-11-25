@@ -231,6 +231,7 @@ def _make_blockscaled_tiled_mma(
     mma_tiler_mn: tuple[int, int],
     use_sm103_ultra: bool,
     use_sm107: bool,
+    two_m_atoms: bool = False,
 ) -> cute.TiledMma:
     """Build a block-scaled MMA atom for the selected instruction family."""
     if use_sm107:
@@ -245,6 +246,13 @@ def _make_blockscaled_tiled_mma(
             sf_vec_size,
             cta_group,
             (*mma_tiler_mn, 128 if a_dtype.width == 4 else 64),
+            permutation_mnk=(
+                cute.make_layout((128, 2, 2), stride=(1, 256, 128)),
+                mma_tiler_mn[1],
+                128 if a_dtype.width == 4 else 64,
+            )
+            if two_m_atoms
+            else None,
         )
     if use_sm103_ultra:
         if a_dtype != b_dtype:
@@ -532,6 +540,7 @@ class BlockScaledGroupedGemmKernel:
             sf_vec_size=self.sf_vec_size,
             cta_group=self.cta_group,
             mma_tiler_mn=atom_mma_tiler_mn,
+            two_m_atoms=self.USE_SM107 and self.NUM_CTAS == 2 and self.NUM_MMAS == 2,
             use_sm107=self.USE_SM107,
             use_sm103_ultra=self.USE_SM103_ULTRA,
         )
@@ -1837,7 +1846,12 @@ class BlockScaledGroupedGemmKernel:
                 tTR_cAcc = tiled_copy_t2r.get_slice(tidx).partition_D(c_acc_epi)
                 tTR_cAcc = cute.group_modes(tTR_cAcc, 3, cute.rank(tTR_cAcc))
                 subtile_cnt = cute.size(tTR_tAcc.shape, mode=[3])
-                num_prev_subtiles = accum_cnt_tile * subtile_cnt
+                # Every atom advances the same C ring. Restarting at slot zero
+                # can overwrite a subtile while its TMA store is still reading.
+                atom_idx = mma_m_idx * NUM_MMA_ATOMS_N + mma_n_idx
+                num_prev_subtiles = (
+                    accum_cnt_tile * NUM_MMA_ATOMS_M * NUM_MMA_ATOMS_N + atom_idx
+                ) * subtile_cnt
                 cols_per_subtile: cutlass.Constexpr[int] = cute.size(
                     pipeline.epi_tile[1]
                 )

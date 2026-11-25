@@ -560,7 +560,13 @@ def _blockscaled_mma_consumer_tile(  # noqa: C901
                         (0, mma_m_idx),
                     )
                     if cutlass.const_expr(NUM_MMA_ATOMS_M > 1):
-                        sfa = pipeline.tCtSFA[(None, mma_m_idx, kblock_idx)]
+                        if cutlass.const_expr(paired_scales):
+                            sf_block = pipeline.tCtSFA[(None, None, kblock_idx)]
+                            sfa = cute.local_tile(
+                                sf_block, (sf_block.shape[0], 1), (0, mma_m_idx)
+                            )
+                        else:
+                            sfa = pipeline.tCtSFA[(None, mma_m_idx, kblock_idx)]
                     else:
                         sfa = pipeline.tCtSFA[(None, None, kblock_idx)]
                     if cutlass.const_expr(not runtime_n and not paired_scales):

@@ -1189,6 +1189,39 @@ class DistMoeConfigTest(unittest.TestCase):
                 )
             self.assertIs(sm107_blockscaled_config(config, MXFP4, (10, 7)), config)
 
+    def test_sm107_staged_two_m_atoms(self) -> None:
+        """Pair M atoms only on opted-in, swapped, full-width SM 10.7 MXFP8 tiles."""
+        from dist_moe.kernels.blockscaled_config import (
+            MXFP8_E4M3,
+            NVFP4,
+            build_blockscaled_config,
+            sm107_blockscaled_config,
+        )
+
+        for fmt, capability, ctas, n, swap, enable, expected in (
+            (MXFP8_E4M3, (10, 7), 2, 256, True, True, 2),
+            (MXFP8_E4M3, (10, 7), 2, 256, True, False, 1),
+            (MXFP8_E4M3, (10, 7), 2, 128, True, True, 1),
+            (MXFP8_E4M3, (10, 7), 2, 256, False, True, 1),
+            (MXFP8_E4M3, (10, 7), 1, 256, True, True, 1),
+            (MXFP8_E4M3, (10, 0), 2, 256, True, True, 1),
+            (NVFP4, (10, 7), 2, 256, True, True, 1),
+        ):
+            config = build_blockscaled_config(
+                num_ctas=ctas, block_n=n, swap_ab=swap, format=fmt
+            )
+            selected = sm107_blockscaled_config(
+                config, fmt, capability, staged_two_m_atoms=enable
+            )
+            self.assertEqual(selected["NUM_MMAS"], expected)
+            self.assertEqual(
+                selected["BLOCK_SIZE_M"], config["BLOCK_SIZE_M"] * expected
+            )
+            self.assertEqual(config["NUM_MMAS"], 1)
+            if expected == 2:
+                self.assertEqual(selected["NUM_TMEM_BUFFERS"], 1)
+                self.assertEqual(selected["NUM_C_STAGES"], 1)
+
     def test_sm107_prefill_smem_budget(self) -> None:
         """Fit by bytes including launch margin, even for an oversized input preset."""
         from dist_moe.kernels.blockscaled_config import sm107_prefill_stages

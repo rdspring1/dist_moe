@@ -335,6 +335,8 @@ The synchronous block-scaled implementation is not part of the public runtime.
 
 Eligible MXFP8 forward tiles use K=64 per instruction with two 32-element scale groups per operand. The scale copy broadcasts each shared scale row across four TMEM datapath groups, and the MMA consumes the scale fragment paired with its operand. See the [SM 10.7 grouped inference measurements](sm107_inference_benchmark.md) for tile eligibility, resource limits, and measured stage depths.
 
+For staged inference with expert width F >= 3,072, eligible swapped two-CTA W13 and W2 tiles use two M atoms in a 512 × 256 × 128 tile. The operand stages are sized for the 227 KiB shared-memory budget.
+
 ## SM 10.7 backward
 
 Eligible MXFP8 E4M3 DGRAD and WGRAD tiles use two K=64 instructions per K=128 mainloop iteration. DGRAD reads transposed expert weights. WGRAD reduces over the routed rows for each expert. Both use independent TMEM accumulator slots and the existing blocked scales with one scale per 32 elements.
